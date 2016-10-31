@@ -165,9 +165,5 @@ func zipsource(source, target string) error {
 		return err
 	})
 
-	if err != nil {
-		return err;
-	}
-	
-	return Process(target, "./test.zip")
+	return err
 }
