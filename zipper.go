@@ -1,16 +1,17 @@
-package main
+package zipper
 
 import (
 	"os"
 	"io"
 	"io/ioutil"
 	"strings"
-	"fmt"
-	"encoding/json"
+
 	"path/filepath"
 	"archive/zip"
 	"encoding/binary"
 )
+
+
 
 
 // Process to fix zip file so Java ZipInputStream can read file
@@ -59,17 +60,13 @@ func process(source, target string) error {
 			b[headerOffset+24] = b[idx+14]
 			b[headerOffset+25] = b[idx+15]
 
-			fmt.Printf("Adding %d", dataDescriptorOffset-headerOffset)
 			for j := headerOffset; j < dataDescriptorOffset; j++ {
 				bOut = append(bOut, b[j])
 			}
 			
-			fmt.Printf("Offsets: %d %d \n", headerOffset, dataDescriptorOffset)
 		}
 
 		if (startOfCentraDir == 0 && b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02) {
-			fmt.Printf("Found CentralDir: %d\n", idx)
-
 			// Write rest of file to bOut
 			startOfCentraDir = (uint32)(idx)
 			bOutIdxOffsetForEod = len(bOut)
@@ -82,7 +79,6 @@ func process(source, target string) error {
 
 	for idx := bOutIdxOffsetForEod; idx < len(bOut); idx++ {
 		if (bOut[idx] == 0x50 && bOut[idx+1] == 0x4b && bOut[idx+2] == 0x05 && bOut[idx+3] == 0x06) {
-			fmt.Printf("End of Found CentralDir: %d\n", startOfCentraDir)
 			bs := make([]byte, 4)
 			binary.LittleEndian.PutUint32(bs, startOfCentraDir)
 			bOut[idx+16] = bs[0]
@@ -101,7 +97,7 @@ func process(source, target string) error {
 	return nil
 }
 
-func zipit(source, target string) error {
+func Archive(source, target string) error {
 	zipfile, err := os.Create(target)
 	if err != nil {
 		return err
@@ -113,7 +109,7 @@ func zipit(source, target string) error {
 
 	info, err := os.Stat(source)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	var baseDir string
@@ -140,10 +136,6 @@ func zipit(source, target string) error {
 		} else {
 			header.Method = zip.Deflate
 		}
-
-		res2B, _ := json.Marshal(header)
-		fmt.Println(string(res2B))
-		fmt.Println("\n\n")
 		
 		writer, err := archive.CreateHeader(header)
 		if err != nil {
@@ -163,10 +155,9 @@ func zipit(source, target string) error {
 		return err
 	})
 
-	return err
-}
-
-func main() {
-	zipit("zip-src/", "archive-go.zip")
-	process("archive-go.zip", "archive-go.zip")
+	if err != nil {
+		return err;
+	}
+	
+	return process(target, target)
 }
