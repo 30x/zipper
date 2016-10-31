@@ -17,6 +17,7 @@ import (
 // Process to fix zip file so Java ZipInputStream can read file
 // http://webmail.dev411.com/p/gg/golang-nuts/155g3s6g53/go-nuts-re-zip-files-created-with-archive-zip-arent-recognised-as-zip-files-by-java-util-zip
 func Process(source, target string) error {
+
 	b, err := ioutil.ReadFile(source)
 	if err != nil {
 		return err
@@ -98,6 +99,15 @@ func Process(source, target string) error {
 }
 
 func Archive(source, target string) error {
+	err := zipsource(source, target)
+	if err != nil {
+		return err
+	}
+
+	return Process(target, target)
+}
+
+func zipsource(source, target string) error {
 	zipfile, err := os.Create(target)
 	if err != nil {
 		return err
@@ -159,5 +169,5 @@ func Archive(source, target string) error {
 		return err;
 	}
 	
-	return Process(target, target)
+	return Process(target, "./test.zip")
 }
