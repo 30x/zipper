@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<KeyValueMapOperations mapIdentifier="routing" async="false" continueOnError="false" enabled="true" name="KVMGetRoutingKey">
+  <ExpiryTimeInSecs>-1</ExpiryTimeInSecs>
+  <Scope>environment</Scope>
+  <Get assignTo="request.header.X-ROUTING-API-KEY">
+    <Key>
+      <Parameter>public-key</Parameter>
+    </Key>
+  </Get>
+</KeyValueMapOperations>
