@@ -48,7 +48,7 @@ func TestArchive(t *testing.T) {
 	}
 
 	hash, _ := hash_file_md5("myProxy.zip") 
-	if hash != "55b43e4c5e4f244218199861a43f503b" {
+	if hash != "4fef080f44366cefebef7a0af7872290" {
 		t.Fatalf("Zip hash did not match.", hash)
 	}
 	

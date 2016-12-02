@@ -5,14 +5,33 @@ import (
 	"io"
 	"io/ioutil"
 	"strings"
+	"bytes"
 
 	"path/filepath"
 	"archive/zip"
 	"encoding/binary"
 )
 
+const CentralDirectoryFileHeaderLen = 46
+const EOCDLen = 22
 
+// // Get a uint32 from a offset of a byte array
+func getSize(b []byte, offset int) uint32 {
+	var size uint32
+	bTmp := []byte{b[offset],b[offset+1],b[offset+2],b[offset+3]}
+	buf := bytes.NewReader(bTmp)
+	binary.Read(buf, binary.LittleEndian, &size)
+	return size
+}
 
+// Get a uint16 from a offset of a byte array
+func getFieldLen(b []byte, offset int) uint16 {
+	var size uint16
+	bTmp := []byte{b[offset],b[offset+1]}
+	buf := bytes.NewReader(bTmp)
+	binary.Read(buf, binary.LittleEndian, &size)
+	return size
+}
 
 // Process to fix zip file so Java ZipInputStream can read file
 // http://webmail.dev411.com/p/gg/golang-nuts/155g3s6g53/go-nuts-re-zip-files-created-with-archive-zip-arent-recognised-as-zip-files-by-java-util-zip
@@ -26,20 +45,20 @@ func Process(source, target string) error {
 	// new output buffer
 	bOut := make([]byte, 0)
 
-	// Locate all Data descriptor blocks
+	// Keep track of all Local Header offsets use them rewrite "Relative offset of local file header" in Central directory file header
+	var localHeaderOffsets []uint32
 
-	headerOffset, dataDescriptorOffset := -1, -1
-	var startOfCentraDir uint32
-	startOfCentraDir = 0
-	bOutIdxOffsetForEod := 0
+	headerOffset := -1
+	startOfCentralDir := 0
 	for idx := 0; idx < len(b); idx++ {
+		// Find each Local file header signature = 0x04034b50 (read as a little-endian number)
 		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x03 && b[idx+3] == 0x04) {
 			headerOffset = idx
-		}
-		
-		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x07 && b[idx+3] == 0x08) {
-			dataDescriptorOffset = idx
 
+		}
+
+		// Find Optional data descriptor signature = 0x08074b50 then backtrack from last headerOffset
+		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x07 && b[idx+3] == 0x08) {			
 			// set byte 7 to 00
 			b[headerOffset+6] = 0x00
 			
@@ -61,35 +80,61 @@ func Process(source, target string) error {
 			b[headerOffset+24] = b[idx+14]
 			b[headerOffset+25] = b[idx+15]
 
-			for j := headerOffset; j < dataDescriptorOffset; j++ {
+
+			// Keep track of header offsets to rewrite "Relative offset of local file header" in Central directory file header
+			localHeaderOffsets = append(localHeaderOffsets, uint32(len(bOut)))
+
+			for j := headerOffset; j < idx; j++ {
 				bOut = append(bOut, b[j])
 			}
-			
 		}
 
-		if (startOfCentraDir == 0 && b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02) {
-			// Write rest of file to bOut
-			startOfCentraDir = (uint32)(idx)
-			bOutIdxOffsetForEod = len(bOut)
-			for j := idx; j < len(b); j++ {
-				bOut = append(bOut, b[j])
+		// Find the first Central directory file header - Central directory file header signature = 0x02014b5
+		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02) {
+			// Mark the start of the Central directory
+			if startOfCentralDir == 0 {
+				startOfCentralDir = len(bOut)
 			}
-			break;
-		}
-	}
 
-	for idx := bOutIdxOffsetForEod; idx < len(bOut); idx++ {
-		if (bOut[idx] == 0x50 && bOut[idx+1] == 0x4b && bOut[idx+2] == 0x05 && bOut[idx+3] == 0x06) {
+			// Shift off the each header offset
+			offset := localHeaderOffsets[0]
+			localHeaderOffsets = localHeaderOffsets[1:]
+
+			// Update it's relative offset of local file header.
 			bs := make([]byte, 4)
-			binary.LittleEndian.PutUint32(bs, startOfCentraDir)
-			bOut[idx+16] = bs[0]
-			bOut[idx+17] = bs[1]
-			bOut[idx+18] = bs[2]
-			bOut[idx+19] = bs[3]
+			binary.LittleEndian.PutUint32(bs, offset)
+			b[idx+42] = bs[0]
+			b[idx+43] = bs[1]
+			b[idx+44] = bs[2]
+			b[idx+45] = bs[3]
+			
+			fileNameLength := getFieldLen(b, idx+28)
+			extraFieldLength := getFieldLen(b, idx+30)
+			fileCommentLength := getFieldLen(b, idx+32)
+
+			for j := idx; j < idx+CentralDirectoryFileHeaderLen+int(fileNameLength)+int(extraFieldLength)+int(fileCommentLength); j++ {
+				bOut = append(bOut, b[j])
+			}
+		}
+
+		// Locate the End of central directory record (EOCD)
+		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x05 && b[idx+3] == 0x06) {
+
+			// Update the Offset of start of central directory, relative to start of archive
+			bs := make([]byte, 4)
+			binary.LittleEndian.PutUint32(bs, uint32(startOfCentralDir))
+			b[idx+16] = bs[0]
+			b[idx+17] = bs[1]
+			b[idx+18] = bs[2]
+			b[idx+19] = bs[3]
+
+			commentLength := getFieldLen(b, idx+20)
+			for j := idx; j < idx+EOCDLen+int(commentLength); j++ {
+				bOut = append(bOut, b[j])
+			}
 		}
 	}
 
-	
 	err = ioutil.WriteFile(target, bOut, 0644)
 	if (err != nil) {
 		return err
