@@ -1,10 +1,10 @@
 package zipper
 
 import (
-	"os"
-	"io"
-	"encoding/hex"
 	"crypto/md5"
+	"encoding/hex"
+	"io"
+	"os"
 	"testing"
 )
 
@@ -40,16 +40,15 @@ func hash_file_md5(filePath string) (string, error) {
 
 }
 
-
 func TestArchive(t *testing.T) {
-	err := Archive("zip-src/", "myProxy.zip")
+	err := Archive("zip-src/", "myProxy.zip", Options{})
 	if err != nil {
 		t.Fatalf("Failed to create zip archive.", err)
 	}
 
-	hash, _ := hash_file_md5("myProxy.zip") 
-	if hash != "4fef080f44366cefebef7a0af7872290" {
+	hash, _ := hash_file_md5("myProxy.zip")
+	if hash != "fd1a1204cfc5d05e4ebcece6beb28288" {
 		t.Fatalf("Zip hash did not match.", hash)
 	}
-	
+
 }
