@@ -1,24 +1,28 @@
 package zipper
 
 import (
-	"os"
+	"bytes"
 	"io"
 	"io/ioutil"
+	"os"
 	"strings"
-	"bytes"
 
-	"path/filepath"
 	"archive/zip"
 	"encoding/binary"
+	"path/filepath"
 )
 
 const CentralDirectoryFileHeaderLen = 46
 const EOCDLen = 22
 
+type Options struct {
+	ExcludeBaseDir bool
+}
+
 // // Get a uint32 from a offset of a byte array
 func getSize(b []byte, offset int) uint32 {
 	var size uint32
-	bTmp := []byte{b[offset],b[offset+1],b[offset+2],b[offset+3]}
+	bTmp := []byte{b[offset], b[offset+1], b[offset+2], b[offset+3]}
 	buf := bytes.NewReader(bTmp)
 	binary.Read(buf, binary.LittleEndian, &size)
 	return size
@@ -27,7 +31,7 @@ func getSize(b []byte, offset int) uint32 {
 // Get a uint16 from a offset of a byte array
 func getFieldLen(b []byte, offset int) uint16 {
 	var size uint16
-	bTmp := []byte{b[offset],b[offset+1]}
+	bTmp := []byte{b[offset], b[offset+1]}
 	buf := bytes.NewReader(bTmp)
 	binary.Read(buf, binary.LittleEndian, &size)
 	return size
@@ -52,16 +56,16 @@ func Process(source, target string) error {
 	startOfCentralDir := 0
 	for idx := 0; idx < len(b); idx++ {
 		// Find each Local file header signature = 0x04034b50 (read as a little-endian number)
-		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x03 && b[idx+3] == 0x04) {
+		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x03 && b[idx+3] == 0x04 {
 			headerOffset = idx
 
 		}
 
 		// Find Optional data descriptor signature = 0x08074b50 then backtrack from last headerOffset
-		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x07 && b[idx+3] == 0x08) {			
+		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x07 && b[idx+3] == 0x08 {
 			// set byte 7 to 00
 			b[headerOffset+6] = 0x00
-			
+
 			// modify CRC in local file header
 			b[headerOffset+14] = b[idx+4]
 			b[headerOffset+15] = b[idx+5]
@@ -80,7 +84,6 @@ func Process(source, target string) error {
 			b[headerOffset+24] = b[idx+14]
 			b[headerOffset+25] = b[idx+15]
 
-
 			// Keep track of header offsets to rewrite "Relative offset of local file header" in Central directory file header
 			localHeaderOffsets = append(localHeaderOffsets, uint32(len(bOut)))
 
@@ -90,7 +93,7 @@ func Process(source, target string) error {
 		}
 
 		// Find the first Central directory file header - Central directory file header signature = 0x02014b5
-		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02) {
+		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02 {
 			// Mark the start of the Central directory
 			if startOfCentralDir == 0 {
 				startOfCentralDir = len(bOut)
@@ -107,7 +110,7 @@ func Process(source, target string) error {
 			b[idx+43] = bs[1]
 			b[idx+44] = bs[2]
 			b[idx+45] = bs[3]
-			
+
 			fileNameLength := getFieldLen(b, idx+28)
 			extraFieldLength := getFieldLen(b, idx+30)
 			fileCommentLength := getFieldLen(b, idx+32)
@@ -118,7 +121,7 @@ func Process(source, target string) error {
 		}
 
 		// Locate the End of central directory record (EOCD)
-		if (b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x05 && b[idx+3] == 0x06) {
+		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x05 && b[idx+3] == 0x06 {
 
 			// Update the Offset of start of central directory, relative to start of archive
 			bs := make([]byte, 4)
@@ -136,15 +139,16 @@ func Process(source, target string) error {
 	}
 
 	err = ioutil.WriteFile(target, bOut, 0644)
-	if (err != nil) {
+	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
-func Archive(source, target string) error {
-	err := zipsource(source, target)
+// Archive processes the file headers after zipping
+func Archive(source, target string, options Options) error {
+	err := zipsource(source, target, options)
 	if err != nil {
 		return err
 	}
@@ -152,7 +156,12 @@ func Archive(source, target string) error {
 	return Process(target, target)
 }
 
-func zipsource(source, target string) error {
+// ArchiveUnprocessed does not process the file headers after zipping.
+func ArchiveUnprocessed(source, target string, options Options) error {
+	return zipsource(source, target, options)
+}
+
+func zipsource(source, target string, options Options) error {
 	zipfile, err := os.Create(target)
 	if err != nil {
 		return err
@@ -162,14 +171,17 @@ func zipsource(source, target string) error {
 	archive := zip.NewWriter(zipfile)
 	defer archive.Close()
 
-	info, err := os.Stat(source)
-	if err != nil {
-		return err
-	}
-
 	var baseDir string
-	if info.IsDir() {
-		baseDir = filepath.Base(source)
+
+	if !options.ExcludeBaseDir {
+		info, err := os.Stat(source)
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			baseDir = filepath.Base(source)
+		}
 	}
 
 	filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
@@ -191,7 +203,7 @@ func zipsource(source, target string) error {
 		} else {
 			header.Method = zip.Deflate
 		}
-		
+
 		writer, err := archive.CreateHeader(header)
 		if err != nil {
 			return err
