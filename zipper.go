@@ -19,17 +19,32 @@ type Options struct {
 	ExcludeBaseDir bool
 }
 
-// // Get a uint32 from a offset of a byte array
-func getSize(b []byte, offset int) uint32 {
-	var size uint32
-	bTmp := []byte{b[offset], b[offset+1], b[offset+2], b[offset+3]}
-	buf := bytes.NewReader(bTmp)
-	binary.Read(buf, binary.LittleEndian, &size)
-	return size
+type ZipEndLocator struct {
+	signaturePos		uint32
+	elDirectorySize		uint32
+	elDirectoryOffSet	uint32
+	elCommentLength 	uint16
+}
+
+type ZipDirEntry struct {
+	signaturePos		uint32
+	deCompressedSize	uint32
+	fileNameLength		uint16
+	extraFieldLength	uint16
+	fileCommentLength	uint16
+	localHeaderOffset	uint32
+}
+
+type ZipFileHeader struct {
+	signaturePos		uint32
+	dataDescSignPos		uint32
+	frCrc				uint32
+	frCompressedSize	uint32
+	frUncompressedSize	uint32
 }
 
 // Get a uint16 from a offset of a byte array
-func getFieldLen(b []byte, offset int) uint16 {
+func getUint16Len(b []byte, offset int) uint16 {
 	var size uint16
 	bTmp := []byte{b[offset], b[offset+1]}
 	buf := bytes.NewReader(bTmp)
@@ -37,105 +52,159 @@ func getFieldLen(b []byte, offset int) uint16 {
 	return size
 }
 
-// Process to fix zip file so Java ZipInputStream can read file
-// http://webmail.dev411.com/p/gg/golang-nuts/155g3s6g53/go-nuts-re-zip-files-created-with-archive-zip-arent-recognised-as-zip-files-by-java-util-zip
-func Process(source, target string) error {
+// Get a uint16 from a 	offset of a byte array
+func getUint32Len(b []byte, offset int) uint32 {
+	var size uint32
+	bTmp := []byte{b[offset], b[offset+1], b[offset+2], b[offset+3]}
+	buf := bytes.NewReader(bTmp)
+	binary.Read(buf, binary.LittleEndian, &size)
+	return size
+}
 
+func MyProcess(source string, target string) error {
 	b, err := ioutil.ReadFile(source)
 	if err != nil {
 		return err
 	}
 
-	// new output buffer
-	bOut := make([]byte, 0)
+	endLocator := ZipEndLocator{}
+	for idx := len(b) - 1; idx >= 0; idx-- {
+		// Locate the Last End of central directory record (EOCD)
+		if b[idx] == 0x06 && b[idx-1] == 0x05 && b[idx-2] == 0x4b && b[idx-3] == 0x50 {
+			endLocator.signaturePos = uint32(idx - 3)
+			endLocator.elDirectorySize = getUint32Len(b, int(endLocator.signaturePos + 12))
+			endLocator.elDirectoryOffSet = getUint32Len(b, int(endLocator.signaturePos + 16))
+			endLocator.elCommentLength = getUint16Len(b, int(endLocator.signaturePos + 20))
 
-	// Keep track of all Local Header offsets use them rewrite "Relative offset of local file header" in Central directory file header
-	var localHeaderOffsets []uint32
-
-	headerOffset := -1
-	startOfCentralDir := 0
-	for idx := 0; idx < len(b); idx++ {
-		// Find each Local file header signature = 0x04034b50 (read as a little-endian number)
-		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x03 && b[idx+3] == 0x04 {
-			headerOffset = idx
-
+			// fmt.Printf("endLocator = %v\n", endLocator)
+			break
 		}
+	}
 
-		// Find Optional data descriptor signature = 0x08074b50 then backtrack from last headerOffset
-		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x07 && b[idx+3] == 0x08 {
-			// set byte 7 to 00
-			b[headerOffset+6] = 0x00
+	var dirEntrys []ZipDirEntry
 
-			// modify CRC in local file header
-			b[headerOffset+14] = b[idx+4]
-			b[headerOffset+15] = b[idx+5]
-			b[headerOffset+16] = b[idx+6]
-			b[headerOffset+17] = b[idx+7]
-
-			// modify compressed len in local file header
-			b[headerOffset+18] = b[idx+8]
-			b[headerOffset+19] = b[idx+9]
-			b[headerOffset+20] = b[idx+10]
-			b[headerOffset+21] = b[idx+11]
-
-			// modify uncompressed len in local file header
-			b[headerOffset+22] = b[idx+12]
-			b[headerOffset+23] = b[idx+13]
-			b[headerOffset+24] = b[idx+14]
-			b[headerOffset+25] = b[idx+15]
-
-			// Keep track of header offsets to rewrite "Relative offset of local file header" in Central directory file header
-			localHeaderOffsets = append(localHeaderOffsets, uint32(len(bOut)))
-
-			for j := headerOffset; j < idx; j++ {
-				bOut = append(bOut, b[j])
-			}
-		}
-
+	for idx := int(endLocator.elDirectoryOffSet); idx < int(endLocator.elDirectoryOffSet + endLocator.elDirectorySize); idx++ {
 		// Find the first Central directory file header - Central directory file header signature = 0x02014b5
 		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x01 && b[idx+3] == 0x02 {
-			// Mark the start of the Central directory
-			if startOfCentralDir == 0 {
-				startOfCentralDir = len(bOut)
-			}
+			tmpEntry := ZipDirEntry{}
+			tmpEntry.signaturePos = uint32(idx)
+			tmpEntry.deCompressedSize = getUint32Len(b, idx + 20)
+			tmpEntry.fileNameLength = getUint16Len(b, idx+28)
+			tmpEntry.extraFieldLength = getUint16Len(b, idx+30)
+			tmpEntry.fileCommentLength = getUint16Len(b, idx+32)
+			tmpEntry.localHeaderOffset = getUint32Len(b, idx + 42)
+			dirEntrys = append(dirEntrys, tmpEntry)
 
-			// Shift off the each header offset
-			offset := localHeaderOffsets[0]
-			localHeaderOffsets = localHeaderOffsets[1:]
+			// fmt.Printf("tmpEntry = %v\n", tmpEntry)
+		}
+	}
 
-			// Update it's relative offset of local file header.
-			bs := make([]byte, 4)
-			binary.LittleEndian.PutUint32(bs, offset)
-			b[idx+42] = bs[0]
-			b[idx+43] = bs[1]
-			b[idx+44] = bs[2]
-			b[idx+45] = bs[3]
+	var fileHeaders []ZipFileHeader
+	for _, entry := range dirEntrys {
+		idx := int(entry.localHeaderOffset + 30 + uint32(entry.fileNameLength) + uint32(entry.extraFieldLength) + entry.deCompressedSize)
 
-			fileNameLength := getFieldLen(b, idx+28)
-			extraFieldLength := getFieldLen(b, idx+30)
-			fileCommentLength := getFieldLen(b, idx+32)
+		tmpFileHeader := ZipFileHeader{}
+		tmpFileHeader.signaturePos = entry.localHeaderOffset
+		tmpFileHeader.dataDescSignPos = uint32(idx)
+		tmpFileHeader.frCrc = getUint32Len(b, idx + 4)
+		tmpFileHeader.frCompressedSize = getUint32Len(b, idx + 8)
+		tmpFileHeader.frUncompressedSize = getUint32Len(b, idx + 12)
+		fileHeaders = append(fileHeaders, tmpFileHeader)
 
-			for j := idx; j < idx+CentralDirectoryFileHeaderLen+int(fileNameLength)+int(extraFieldLength)+int(fileCommentLength); j++ {
-				bOut = append(bOut, b[j])
-			}
+		// fmt.Printf("tmpFileHeader = %v\n", tmpFileHeader)
+	}
+
+	// new output buffer
+	bOut := make([]byte, 0)
+	var localHeaderOffsets []uint32
+
+	for _, tmpHeader := range fileHeaders {
+		headerOffset := tmpHeader.signaturePos
+
+		// set byte 7 to 00
+		b[headerOffset+6] = 0x00
+
+		// modify CRC in local file header
+		bs := make([]byte, 4)
+		binary.LittleEndian.PutUint32(bs, tmpHeader.frCrc)
+
+		b[headerOffset+14] = bs[0]
+		b[headerOffset+15] = bs[1]
+		b[headerOffset+16] = bs[2]
+		b[headerOffset+17] = bs[3]
+
+		// modify compressed len in local file header
+		binary.LittleEndian.PutUint32(bs, tmpHeader.frCompressedSize)
+
+		b[headerOffset+18] = bs[0]
+		b[headerOffset+19] = bs[1]
+		b[headerOffset+20] = bs[2]
+		b[headerOffset+21] = bs[3]
+
+		// modify uncompressed len in local file header
+		binary.LittleEndian.PutUint32(bs, tmpHeader.frUncompressedSize)
+
+		b[headerOffset+22] = bs[0]
+		b[headerOffset+23] = bs[1]
+		b[headerOffset+24] = bs[2]
+		b[headerOffset+25] = bs[3]
+
+		// Keep track of header offsets to rewrite "Relative offset of local file header" in Central directory file header
+		localHeaderOffsets = append(localHeaderOffsets, uint32(len(bOut)))
+
+		for j := headerOffset; j < tmpHeader.dataDescSignPos; j++ {
+			bOut = append(bOut, b[j])
+		}
+	}
+
+	startOfCentralDir := 0
+	for _, tmpDirEntry := range dirEntrys {
+		// Mark the start of the Central directory
+		if startOfCentralDir == 0 {
+			startOfCentralDir = len(bOut)
 		}
 
-		// Locate the End of central directory record (EOCD)
-		if b[idx] == 0x50 && b[idx+1] == 0x4b && b[idx+2] == 0x05 && b[idx+3] == 0x06 {
+		// Shift off the each header offset
+		offset := localHeaderOffsets[0]
+		localHeaderOffsets = localHeaderOffsets[1:]
 
-			// Update the Offset of start of central directory, relative to start of archive
-			bs := make([]byte, 4)
-			binary.LittleEndian.PutUint32(bs, uint32(startOfCentralDir))
-			b[idx+16] = bs[0]
-			b[idx+17] = bs[1]
-			b[idx+18] = bs[2]
-			b[idx+19] = bs[3]
+		headerOffSet := tmpDirEntry.signaturePos
 
-			commentLength := getFieldLen(b, idx+20)
-			for j := idx; j < idx+EOCDLen+int(commentLength); j++ {
-				bOut = append(bOut, b[j])
-			}
+		// set General purpose bit flag to 0
+		b[headerOffSet+8] = 0x00
+		b[headerOffSet+9] = 0x00
+
+		// Update it's relative offset of local file header.
+		bs := make([]byte, 4)
+		binary.LittleEndian.PutUint32(bs, offset)
+		b[headerOffSet+42] = bs[0]
+		b[headerOffSet+43] = bs[1]
+		b[headerOffSet+44] = bs[2]
+		b[headerOffSet+45] = bs[3]
+
+		for j := headerOffSet; j < headerOffSet +
+									CentralDirectoryFileHeaderLen +
+									uint32(tmpDirEntry.fileNameLength) +
+									uint32(tmpDirEntry.fileCommentLength) +
+									uint32(tmpDirEntry.extraFieldLength); j++ {
+			bOut = append(bOut, b[j])
 		}
+	}
+
+	// Update the Offset of start of central directory, relative to start of archive
+	headerOffSet := endLocator.signaturePos
+	bs := make([]byte, 4)
+	binary.LittleEndian.PutUint32(bs, uint32(startOfCentralDir))
+
+	b[headerOffSet+16] = bs[0]
+	b[headerOffSet+17] = bs[1]
+	b[headerOffSet+18] = bs[2]
+	b[headerOffSet+19] = bs[3]
+
+	for j := headerOffSet; j < headerOffSet +
+								EOCDLen +
+								uint32(endLocator.elCommentLength); j++ {
+		bOut = append(bOut, b[j])
 	}
 
 	err = ioutil.WriteFile(target, bOut, 0644)
